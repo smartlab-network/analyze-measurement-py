@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import string
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkinter import filedialog, TclError
-from scipy.signal import find_peaks
+from scipy.ndimage import minimum_filter1d
 
 
 class GUI:
@@ -17,7 +17,8 @@ class GUI:
 
         self.rows_var = ttk.IntVar(value=6)
         self.height_spacing_var = ttk.DoubleVar(value=1.4)
-        self.min_distance_var = ttk.IntVar(value=10)
+        self.min_freq_var = ttk.DoubleVar(value=1.2)
+        self.smooth_var = ttk.IntVar(value=3)
 
         self.start_idx = 0
 
@@ -44,30 +45,42 @@ class GUI:
             self.left_panel,
             text="Load CSV",
             command=self.load_file
-        ).grid(row=0, column=0, columnspan=2, sticky="nsew", pady=8)
+        ).grid(row=0, column=0, columnspan=2, sticky="nsew", pady=6, padx=8)
 
-        ttk.Label(self.left_panel, text="Rows:", font=('Helvetica', 16)).grid(row=1, column=0)
+        ttk.Label(self.left_panel, text="Rows:", font=('Helvetica', 16), anchor="c").grid(row=1, column=0, sticky="new")
+
         self.rows_entry = ttk.Entry(self.left_panel, textvariable=self.rows_var, justify="center")
-        self.rows_entry.grid(row=1, column=1, sticky="ew")
+        self.rows_entry.grid(row=1, column=0, sticky="ew", padx=8)
         self.rows_entry.bind("<Return>", self.on_rows_changed)
 
-        ttk.Label(self.left_panel, text="Height spacing", font=('Helvetica', 16)).grid(row=2, column=0)
+        ttk.Label(self.left_panel, text="Height spacing", font=('Helvetica', 16), anchor="c").grid(row=2, column=0, sticky="new", padx=8)
+
         self.height_spacing_entry = ttk.Entry(
             self.left_panel,
             textvariable=self.height_spacing_var,
             justify="center"
         )
-        self.height_spacing_entry.grid(row=2, column=1, sticky="ew")
+        self.height_spacing_entry.grid(row=2, column=0, sticky="ew", padx=8)
         self.height_spacing_entry.bind("<Return>", self.on_height_spacing)
 
-        ttk.Label(self.left_panel, text="Min Peak Distance", font=('Helvetica', 16)).grid(row=3, column=0)
+        ttk.Label(self.left_panel, text="Min Freq in hz", font=('Helvetica', 16), anchor="c").grid(row=3, column=0, sticky="new", padx=8)
+
         self.distance_entry = ttk.Entry(
             self.left_panel,
-            textvariable=self.min_distance_var,
+            textvariable=self.min_freq_var,
             justify="center"
         )
-        self.distance_entry.grid(row=3, column=1, sticky="ew")
+        self.distance_entry.grid(row=3, column=0, sticky="ew", padx=8)
         self.distance_entry.bind("<Return>", self.on_distance_entry)
+
+        ttk.Label(self.left_panel, text="Smooth", font=('Helvetica', 16), anchor="c").grid(row=4, column=0,  sticky="new", padx=8)
+        self.smooth_entry = ttk.Entry(
+            self.left_panel,
+            textvariable=self.smooth_var,
+            justify="center"
+        )
+        self.smooth_entry.grid(row=4, column=0, sticky="ew", padx=8)
+        self.smooth_entry.bind("<Return>", self.on_smooth_changed)
 
         # PLOT frame(middle)
         self.plot_frame = ttk.Frame(self.gui)
@@ -89,7 +102,7 @@ class GUI:
 
         self.gui.bind_all("<MouseWheel>", self._on_mousewheel)
 
-        self.row_window = {}
+        self.row_window:dict[int, RowWindow] = {}
 
     #LOAD DATA
     def load_file(self):
@@ -147,7 +160,6 @@ class GUI:
                 time,
                 values[:, row_idx]
             )
-
         self.update_plots()
 
     #ZOOM
@@ -223,7 +235,8 @@ class GUI:
 
             self.row_window[data_idx].plot(
                 ax,
-                min_distance=self.min_distance_var.get()
+                min_frq=self.min_freq_var.get(),
+                smooth_buffer=self.smooth_var.get()
             )
 
         self.canvas.draw_idle()
@@ -299,50 +312,52 @@ class GUI:
     def on_rows_changed(self, event):
         try:
             self.create_plots()
-        except Exception:
+        except AttributeError:
             pass
 
     def on_distance_entry(self, event):
-        self.update_plots()
+        try:
+            self.update_plots()
+
+        except AttributeError:
+            pass
+
+    def on_smooth_changed(self, event=None):
+        try:
+            self.update_plots()
+        except AttributeError:
+            pass
 
 #ROW WINDOW
 class RowWindow:
-    def __init__(self, row_idx, row_name, time, values):
+    def __init__(self, row_idx: int, row_name: str, time: np.ndarray, values: np.ndarray):
         self.row_idx = row_idx
         self.row_name = row_name
         self.time = time
         self.values = values
 
-    def smooth(self, v, w=7):
-        return np.convolve(v, np.ones(w)/w, mode="same")
+    """
+    running avg with buffer range. numpy methods are used to make it O(n), insted of O(n * buffer)
+    """
+    def smooth(self, values: np.ndarray, buffer: int):
+        len_values = len(values)
+        new_values = np.zeros(len_values)
 
-    def find_peaks(self, min_dist):
-        v = self.smooth(self.values)
-        inv = -v
+        half_buffer = buffer // 2
 
-        dt = np.mean(np.diff(self.time)) if len(self.time) > 1 else 1
+        new_values[:half_buffer] = values[:half_buffer]
+        new_values[len_values - half_buffer:] = values[len_values - half_buffer:]
 
-        min_dist_sec = min_dist / 1000.0
+        kernel_size = 2 * half_buffer + 1
+        kernel = np.ones(kernel_size) / kernel_size
 
-        dist = max(1, int(min_dist_sec / dt))
+        # Convolution applies a sliding window over `values`, multiplies it element-wise
+        # with the kernel, and sums the result. 'valid' avoids boundary issues. for every valid window.
+        smoothed = np.convolve(values, kernel, mode='valid')
 
-        peaks, _ = find_peaks(
-            inv,
-            distance=dist,
-            prominence=np.std(v) * 0.3
-        )
+        new_values[half_buffer:len_values - half_buffer] = smoothed
 
-        return self.time[peaks], self.values[peaks]
-
-    def plot(self, ax, min_distance=10):
-        ax.plot(self.time, self.values)
-
-        pt, pv = self.find_peaks(min_distance)
-        ax.plot(pt, pv, "ro")
-
-        ax.set_title(self.row_name)
-        ax.grid(True)
-        ax.invert_yaxis()
+        return new_values
 
     def open(self, master):
         fig, ax = plt.subplots()
@@ -352,6 +367,34 @@ class RowWindow:
         canvas = FigureCanvasTkAgg(fig, master=win)
         canvas.get_tk_widget().pack(fill="both", expand=True)
         canvas.draw()
+
+    def find_peaks(self, min_frq, values=None):
+        if values is None:
+            values = self.values
+
+        buffer = int(60 / min_frq)
+        half_buffer = buffer // 2
+        kernel_size = 2 * half_buffer + 1
+
+        window_min = minimum_filter1d(values, size=kernel_size)
+        mask = values == window_min
+        peaks_idx = np.where(mask)[0]
+
+        return peaks_idx, values[peaks_idx]
+
+    def plot(self, ax, min_frq=1.2, smooth_buffer=3):
+        smoothed = self.smooth(self.values, smooth_buffer)
+
+        ax.plot(self.time, self.values, alpha=0.3)  # optional: raw
+        ax.plot(self.time, smoothed, label="smoothed")
+
+        pt, pv = self.find_peaks(min_frq=min_frq, values = smoothed)
+
+        ax.plot(self.time[pt], pv, "ro", label="peaks")
+
+        ax.set_title(self.row_name)
+        ax.grid(True)
+        ax.invert_yaxis()
 
 
 GUI().gui.mainloop()
