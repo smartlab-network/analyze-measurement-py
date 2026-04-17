@@ -397,5 +397,6 @@ class RowWindow:
         ax.invert_yaxis()
 
 
-GUI().gui.mainloop()
-
+gui = GUI()
+root = gui.gui
+root.mainloop()
