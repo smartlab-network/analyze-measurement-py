@@ -15,7 +15,7 @@ class GUI:
 
         self.wells = plate_rows * plate_columns
 
-        self.rows_var = ttk.IntVar(value=6)
+        self.rows_var = ttk.IntVar(value=48)
         self.height_spacing_var = ttk.DoubleVar(value=1.4)
         self.min_freq_var = ttk.DoubleVar(value=1.2)
         self.smooth_var = ttk.IntVar(value=3)
@@ -24,23 +24,31 @@ class GUI:
         self.mouse_inside_plot = False
         self.zoom_active = False
 
-        self.gui.rowconfigure(0, weight=1)
-        self.gui.columnconfigure(0, weight=0)
-        self.gui.columnconfigure(1, weight=4)
+        self.gui.rowconfigure(0, weight=0, minsize=60)
+        self.gui.rowconfigure(1, weight=1)
+        self.gui.columnconfigure(0, weight=1)
+        self.gui.columnconfigure(1, weight=10)
         self.gui.columnconfigure(2, weight=1)
         self.gui.columnconfigure(3, weight=0)
 
+        #HEADER FRAME
+        self.header_frame = ttk.Frame(self.gui)
+        self.header_frame.grid(row = 0, column=0, columnspan=4, sticky="nsew", pady=20)
+
+        self.header_frame.columnconfigure(0, weight=0)
+        self.header_frame.columnconfigure(1, weight=1)
+        self.header_frame.rowconfigure(0, weight=2)
         # LEFT PANEL
         self.left_panel = ttk.Frame(self.gui)
-        self.left_panel.grid(row=0, column=0, sticky="ns")
+        self.left_panel.grid(row=1, column=0, sticky="ns")
 
         for i in range(9):
             self.left_panel.rowconfigure(i, weight=1)
         self.left_panel.columnconfigure(0, weight=1)
         self.left_panel.columnconfigure(1, weight=1)
 
-        ttk.Button(self.left_panel, text="Load CSV", command=self.load_file).grid(
-            row=0, column=0, columnspan=2, sticky="nsew", pady=6, padx=8
+        ttk.Button(self.header_frame, text="CSV", command=self.load_file).grid(
+            row=0, column=0, pady=5, padx=5
         )
 
         ttk.Label(self.left_panel, text="Rows:", font=("Helvetica", 16), anchor="c").grid(
@@ -66,13 +74,13 @@ class GUI:
 
         # PLOT FRAME
         self.plot_frame = ttk.Frame(self.gui)
-        self.plot_frame.grid(row=0, column=1, sticky="nsew")
+        self.plot_frame.grid(row=1, column=1, sticky="nsew")
         self.plot_frame.rowconfigure(0, weight=1)
         self.plot_frame.columnconfigure(0, weight=1)
 
         # RIGHT BUTTON PANEL
         self.button_container = ttk.Frame(self.gui)
-        self.button_container.grid(row=0, column=2, sticky="nsew", pady=0, ipady=0)
+        self.button_container.grid(row=1, column=2, sticky="nsew", pady=5, ipady=0)
 
         # SCROLLBAR
         self.scrollbar = ttk.Scrollbar(self.gui, orient="vertical", command=self.on_scrollbar)
@@ -327,10 +335,6 @@ class RowWindow:
         return on_zoom
 
     def _make_tk_zoom_blocker(self, canvas):
-        """
-        Blockiert MouseWheel-Events auf tkinter-Ebene, damit sie nicht
-        an den Haupt-Canvas (oder andere Widgets) weiterpropagieren.
-        """
 
         def block(event):
             # matplotlib bekommt den Event über mpl_connect — tkinter-Propagation stoppen
@@ -356,7 +360,7 @@ class RowWindow:
                 "scroll_event", self._make_zoom_handler(self.detail_canvas)
             )
 
-        # X-Knopf: withdraw statt destroy
+        #on close
         self.window.protocol("WM_DELETE_WINDOW", self.window.withdraw)
 
         self.detail_ax.clear()
