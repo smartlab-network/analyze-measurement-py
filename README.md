@@ -8,13 +8,18 @@ frequency and relative contraction from the raw pixel signal.
 ---
 
 ## Requirements
-
-```
-Python >= 3.10
-ttkbootstrap
-numpy
-matplotlib
-scipy
+ 
+Requires **Python >= 3.10**. Create a virtual environment and install all
+dependencies with the following commands:
+ 
+```bash
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Linux / macOS
+# .venv\Scripts\activate         # Windows
+ 
+# Install dependencies
+pip install ttkbootstrap numpy matplotlib scipy
 ```
 
 ---
