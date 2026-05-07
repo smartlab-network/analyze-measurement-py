@@ -142,7 +142,7 @@ class GUI:
         self.plot_frame.columnconfigure(0, weight=1)
 
         self.scrollbar = ttk.Scrollbar(self.gui, orient="vertical", command=self.on_scrollbar)
-        self.scrollbar.grid(row=0, column=3, sticky="ns")
+        self.scrollbar.grid(row=0, column=3, sticky="ns", rowspan = 3)
 
         self.gui.bind_all("<MouseWheel>", self._on_mousewheel)
 
@@ -214,7 +214,7 @@ class GUI:
         rows = self.rows_var.get()
 
         self.fig, self.axes = plt.subplots(rows, 1, figsize=(1, 1))
-        self.fig.subplots_adjust(top=0.98, bottom=0.02, left=0.10, right=0.88, hspace=0)
+        self.fig.subplots_adjust(top=0.98, bottom=0.02, left=0.10, right=0.90, hspace=0)
         self.fig.patch.set_facecolor(self.gui_theme_hex)
 
         if not isinstance(self.axes, np.ndarray):
