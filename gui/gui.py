@@ -1,3 +1,5 @@
+import os
+
 import ttkbootstrap as ttk
 from ttkbootstrap.dialogs import Messagebox
 import numpy as np
@@ -10,6 +12,7 @@ from scipy.ndimage import minimum_filter1d
 
 
 class GUI:
+
     """
     - **Header** (row 0): CSV load button.
     - **Left panel** (col 0): parameter controls — visible rows, maximum
@@ -48,7 +51,6 @@ class GUI:
         Background colour of the active ttkbootstrap theme, used to
         match the Matplotlib figure background.
     """
-
     def __init__(self, plate_rows: int = 8, plate_columns: int = 6):
         self.gui = ttk.Window(title="Analyze measurement", themename="superhero")
         self.gui.geometry("1920x1080")
@@ -62,6 +64,8 @@ class GUI:
         self.min_freq_var = ttk.DoubleVar(value=1.2)
         self.smooth_var = ttk.IntVar(value=3)
 
+        self.loaded_file = False
+        self.filename: str = ""
         self.start_idx = 0
         self.mouse_inside_plot = False
         self.zoom_active = False
@@ -74,8 +78,9 @@ class GUI:
 
         self.header_frame = ttk.Frame(self.gui)
         self.header_frame.grid(row=0, column=0, columnspan=4, sticky="nsew", pady=20)
-        self.header_frame.columnconfigure(0, weight=0)
-        self.header_frame.columnconfigure(1, weight=1)
+        self.header_frame.columnconfigure(0, weight=0, minsize=120)
+        self.header_frame.columnconfigure(1, weight=0, minsize=120)
+        self.header_frame.columnconfigure(2, weight=1)
         self.header_frame.rowconfigure(0, weight=2)
 
         self.left_panel = ttk.Frame(self.gui)
@@ -88,7 +93,11 @@ class GUI:
         self.left_panel.columnconfigure(2, weight=1)
 
         ttk.Button(self.header_frame, text="CSV", command=self.load_file).grid(
-            row=0, column=0, pady=5, padx=5
+            row=0, column=0, pady=5, padx=5, sticky = "nsew"
+        )
+
+        ttk.Button(self.header_frame, text = "Heatmap", command=self.heat_map_callback).grid(
+            row = 0, column = 1, pady= 5, padx = 5, sticky = "nsew"
         )
 
         ttk.Label(self.left_panel, text="Rows:", font=("Helvetica", 16), anchor="c").grid(
@@ -162,8 +171,114 @@ class GUI:
         )
         if not path:
             return
+
+        file = os.path.basename(path)
+        self.filename = os.path.splitext(file)[0]
+
+        self.loaded_file = True
         self.data = np.loadtxt(path, delimiter=",")
         self.create_plots()
+
+    def heat_map_callback(self):
+        """
+            Open a Toplevel window showing two plate heatmaps.
+
+            Displays one heatmap for beat frequency [Hz] and one for mean
+            relative contraction Force[%], both arranged as an 8-row x 6-column
+            plate layout.  Color limits are set robustly via median ± k·MAD to
+            suppress the influence of outlier wells (e.g. dead or artefact wells).
+            A shared colorbar (blue → red) is shown on the left of each heatmap.
+
+            Notes
+            -----
+            Color limit derivation (k = 2.0):
+
+            .. code-block:: text
+
+                center = median(values)
+                MAD    = median(|values − center|)
+                vmin   = center − k · MAD
+                vmax   = center + k · MAD
+            """
+        if not self.loaded_file:
+            return
+        win = ttk.Toplevel("Heatmap", master=self.gui)
+        win.geometry("1600x900")
+
+        win.columnconfigure(0, weight=0,minsize=100)
+        win.columnconfigure(1, weight=1)
+        win.rowconfigure(0, weight=0, minsize=60)
+        win.rowconfigure(1, weight=1)
+
+        fig, axes = plt.subplots(1, 2, figsize=(1, 1))
+        fig.patch.set_facecolor(self.gui_theme_hex)
+        fig.subplots_adjust(left=0.08, right=0.95, top=0.88, bottom=0.08, wspace=0.4)
+
+        ttk.Button(win, text = "Safe Heatmap", command=lambda: self.callback_safe_heatmap(fig)).grid(
+            row = 0, column = 0, sticky ="nw", padx = 5, pady = 5)
+
+        plate_rows, plate_cols = 8, 6
+        freq_matrix = np.zeros((plate_rows, plate_cols))
+        contraction_matrix = np.zeros((plate_rows, plate_cols))
+
+        for idx, rw in self.row_window.items():
+            r, c = idx // plate_cols, idx % plate_cols
+            m = rw.compute_metrics(self.min_freq_var.get(), self.smooth_var.get())
+            freq_matrix[r, c] = m["freq"]
+            contraction_matrix[r, c] = m["mean_contraction"]
+
+        k = 2.0
+        datasets = [
+            (freq_matrix, "Frequency [Hz]"),
+            (contraction_matrix, "Force [%]"),
+        ]
+
+        for ax, (data, title) in zip(axes, datasets):
+            flat = data.flatten()
+
+            center = float(np.median(flat))
+            mad = float(np.median(np.abs(flat - center)))
+            vmin = center - k * mad
+            vmax = center + k * mad
+
+            im = ax.imshow(data, cmap="RdYlBu_r", aspect="auto",
+                           vmin=vmin, vmax=vmax)
+
+            cbar = fig.colorbar(im, ax=ax, location="left", pad=0.18, fraction=0.046)
+            cbar.set_label(title, fontsize=9, color="white")
+            cbar.ax.yaxis.set_tick_params(color="white", labelcolor="white")
+
+            # Tick labels: columns 1–6, rows A–H
+            ax.set_xticks(range(plate_cols))
+            ax.set_xticklabels([str(i + 1) for i in range(plate_cols)], color="white")
+            ax.set_yticks(range(plate_rows))
+            ax.set_yticklabels(list(string.ascii_uppercase[:plate_rows]), color="white")
+            ax.tick_params(colors="white")
+            ax.set_title(title, color="white", fontsize=11, pad=10)
+
+            # Value annotation per cell
+            for r in range(plate_rows):
+                for c in range(plate_cols):
+                    ax.text(c, r, f"{data[r, c]:.1f}",
+                            ha="center", va="center",
+                            fontsize=7, color="black", fontweight="bold")
+
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        canvas.get_tk_widget().grid(column = 1, row=1, sticky="nsew")
+        canvas.draw()
+
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+
+    def callback_safe_heatmap(self, fig: plt.Figure):
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            title="Safe Heatmap",
+            initialfile=f"{self.filename}_heatmap"
+        )
+
+        if file_path:
+            fig.savefig(file_path, format="pdf", bbox_inches="tight")
 
     def get_data(self) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -214,7 +329,7 @@ class GUI:
         rows = self.rows_var.get()
 
         self.fig, self.axes = plt.subplots(rows, 1, figsize=(1, 1))
-        self.fig.subplots_adjust(top=0.98, bottom=0.02, left=0.10, right=0.90, hspace=0)
+        self.fig.subplots_adjust(top=0.98, bottom=0.04, left=0.08, right=0.90, hspace=0)
         self.fig.patch.set_facecolor(self.gui_theme_hex)
 
         if not isinstance(self.axes, np.ndarray):
@@ -238,6 +353,91 @@ class GUI:
             )
 
         self.update_plots()
+
+    def update_plots(self) -> None:
+        """
+        Redraw all visible subplots and refresh metric labels and buttons.
+
+        For each visible well the method:
+
+        1. Clears the subplot and calls :meth:`RowWindow.plot`, which
+           returns a ``metrics`` dict (see :meth:`RowWindow.compute_metrics`).
+        2. Renders ``freq`` [Hz] and ``mean_contraction`` [%] as two
+           left-aligned columns in the figure left margin, with a shared
+           column header and separator line above the first subplot.
+        3. Refreshes well-name buttons via :meth:`update_buttons` and
+           synchronises the scrollbar via :meth:`update_scrollbar`.
+
+        Column x-positions are derived from the figure left margin so that
+        the label columns scale correctly when the window is resized:
+
+        .. code-block:: text
+
+            fig_left  = subplots_adjust(left)   e.g. 0.10
+            X_HZ      = fig_left * 0.05         leftmost column
+            X_FORCE   = fig_left * 0.50         right column, centred in margin
+        """
+        if hasattr(self, '_metric_texts'):
+            for txt in self._metric_texts:
+                txt.remove()
+        self._metric_texts = []
+
+        # Derive column positions from the actual figure left margin
+        fig_left = self.fig.subplotpars.left  # e.g. 0.10 — set in create_plots
+        X_HZ = fig_left * 0.05
+        X_FORCE = fig_left * 0.52
+
+        first_pos = self.axes[0].get_position()
+        header_y = first_pos.y0 + first_pos.height + 0.004
+
+        # Column headers
+        for x, label in [(X_HZ, "Hz"), (X_FORCE, "F[%]")]:
+            txt = self.fig.text(
+                x, header_y, label,
+                va="bottom", ha="left",
+                fontsize=10, color="red", fontstyle="italic",
+            )
+            self._metric_texts.append(txt)
+
+        # Separator line under headers
+        line = self.fig.add_artist(
+            plt.Line2D(
+                [X_HZ, fig_left * 0.97], [header_y, header_y],
+                transform=self.fig.transFigure,
+                color="white", linewidth=0.6, alpha=0.5,
+            )
+        )
+        self._metric_texts.append(line)
+
+        for i, ax in enumerate(self.axes):
+            ax.clear()
+            data_idx = self.start_idx + i
+            if data_idx >= self.wells:
+                continue
+
+            metrics = self.row_window[data_idx].plot(
+                ax,
+                min_frq=self.min_freq_var.get(),
+                smooth_buffer=self.smooth_var.get(),
+            )
+
+            pos = ax.get_position()
+            y_center = pos.y0 + pos.height / 2
+
+            for x, val in [(X_HZ, metrics["freq"]),
+                           (X_FORCE, metrics["mean_contraction"])]:
+                txt = self.fig.text(
+                    x, y_center,
+                    f"{val:.1f}",
+                    va="center", ha="left",
+                    fontsize=8, color="white",
+                )
+                self._metric_texts.append(txt)
+
+        self.fig.supxlabel("Time in s", fontsize=10)
+        self.canvas.draw_idle()
+        self.update_buttons()
+        self.update_scrollbar()
 
     def update_buttons(self) -> None:
         """
@@ -364,72 +564,6 @@ class GUI:
             ax.set_alpha(1.0)
         self.canvas.draw_idle()
 
-    def update_plots(self) -> None:
-        """
-        Redraw all visible subplots and refresh metric labels and buttons.
-
-        For each visible well the method:
-
-        1. Clears the subplot and calls :meth:`RowWindow.plot`, which
-           returns a ``metrics`` dict (see :meth:`RowWindow.compute_metrics`).
-        2. Reads ``freq`` [Hz] and ``mean_contraction`` [%] from the dict
-           and renders them as figure-level text in the left margin,
-           vertically centred on the corresponding subplot.
-        3. Refreshes well-name buttons via :meth:`update_buttons` and
-           synchronises the scrollbar via :meth:`update_scrollbar`.
-
-        Old metric ``Text`` objects are removed before new ones are
-        created to prevent accumulation across redraws.
-
-        Notes
-        -----
-        Metric label position (figure coordinates):
-
-        .. code-block:: text
-
-            x       = 0.005  (left margin, within [0, left=0.10])
-            y       = pos.y0 + pos.height / 2  (subplot vertical centre)
-        """
-        if hasattr(self, '_metric_texts'):
-            for txt in self._metric_texts:
-                txt.remove()
-        self._metric_texts = []
-
-        for i, ax in enumerate(self.axes):
-            ax.clear()
-            data_idx = self.start_idx + i
-            if data_idx >= self.wells:
-                continue
-
-            metrics = self.row_window[data_idx].plot(
-                ax,
-                min_frq=self.min_freq_var.get(),
-                smooth_buffer=self.smooth_var.get(),
-            )
-
-            pos = ax.get_position()
-            y_center = pos.y0 + pos.height / 2
-
-            freq = metrics["freq"]
-            mean_contraction = metrics["mean_contraction"]
-
-            label = f"{freq:.2f} Hz\n{mean_contraction:.1f} Force[%]"
-
-            txt = self.fig.text(
-                0.005, y_center,
-                label,
-                va="center", ha="left",
-                fontsize=9,
-                color="white",
-                linespacing=1.6,
-            )
-            self._metric_texts.append(txt)
-
-        self.fig.supxlabel("Time in s", fontsize=10)
-        self.canvas.draw_idle()
-        self.update_buttons()
-        self.update_scrollbar()
-
     def update_scrollbar(self) -> None:
         """
         Synchronise the scrollbar thumb with the current subplot stack position.
@@ -517,6 +651,7 @@ class GUI:
             self.rows_var.set(1)
         if self.rows_var.get() > 48:
             self.rows_var.set(48)
+        self.start_idx = 0
         try:
             self.create_plots()
         except AttributeError:
@@ -611,6 +746,8 @@ class RowWindow:
         self.detail_fig = None
         self.detail_canvas = None
         self.detail_ax = None
+
+        self.metrics: dict = {}
 
     def smooth(self, values: np.ndarray, buffer: int) -> np.ndarray:
         """
@@ -870,7 +1007,7 @@ class RowWindow:
         else:
             freq = 0.0
 
-        return dict(
+        self.metrics = dict(
             smoothed=smoothed,
             run_max=run_max,
             peak_idx=peak_idx,
@@ -880,6 +1017,8 @@ class RowWindow:
             mean_contraction=mean_contraction,
             freq=freq,
         )
+        return self.metrics
+
 
     def plot(
         self,
