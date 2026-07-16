@@ -269,6 +269,7 @@ class GUI:
                 min_frq_default=self.min_freq_var.get(),
                 smooth_default=self.smooth_var.get(),
             )
+            self.row_window[row_idx]._main_gui_instance = self
 
         self.update_plots()
 
@@ -337,6 +338,7 @@ class GUI:
                 ax,
                 min_frq=self.min_freq_var.get(),
                 smooth_buffer=self.smooth_var.get(),
+                show_manual_peaks_green=False
             )
 
             pos = ax.get_position()

@@ -18,14 +18,6 @@ def smooth(values: np.ndarray, buffer: int) -> np.ndarray:
     -------
     result : np.ndarray, shape (n,)
         Smoothed signal with original-value edges.
-
-    Notes
-    -----
-    .. code-block:: text
-
-        result[i] = mean(values[i - half : i + half + 1])
-                    for i in [half, n - half)
-        result[i] = values[i]   otherwise
     """
     if buffer < 2:
         return values.copy()
@@ -57,13 +49,6 @@ def running_max(values: np.ndarray, window_sec: float, dt: float) -> np.ndarray:
     -------
     run_max : np.ndarray, shape (n,)
         Diastolic baseline signal in pixels.
-
-    Notes
-    -----
-    .. code-block:: text
-
-        w_samples = ceil(window_sec / dt)  →  forced odd
-        runMax[i] = max(values[i - w//2 : i + w//2 + 1])
     """
     window_samples = max(1, int(window_sec / dt))
     if window_samples % 2 == 0:
@@ -93,17 +78,6 @@ def find_peaks(
         Sample indices of accepted peaks.
     peak_val : np.ndarray, shape (k,)
         Signal values at accepted peaks in pixels.
-
-    Notes
-    -----
-    .. code-block:: text
-
-        min_spacing [samples] = floor(1 / min_frq / dt)
-        kernel_size           = 2 * min_spacing + 1
-
-    Algorithm: candidate detection via ``minimum_filter1d``, then
-    greedy deduplication enforcing ``min_spacing`` between peaks;
-    within the exclusion zone the deeper peak wins.
     """
     min_spacing = int((1.0 / min_frq) / dt)
     kernel_size = 2 * min_spacing + 1
@@ -131,12 +105,11 @@ def compute_metrics(
     min_frq: float,
     smooth_buffer: int,
     run_max_window_sec: float = 2.0,
+    extra_peak_times: np.ndarray | None = None,
+    excluded_peak_times: np.ndarray | None = None,
 ) -> dict:
     """
     Compute all contractility metrics for a single well.
-
-    Pipeline: smooth → running_max → find_peaks →
-    peakHeight → contraction% → freq.
 
     Parameters
     ----------
@@ -150,6 +123,11 @@ def compute_metrics(
         Moving-average kernel width.
     run_max_window_sec : float, optional
         Diastolic baseline window in seconds. Default ``2.0``.
+    extra_peak_times : np.ndarray, optional
+        Additional peak times to include (e.g., user-placed peaks).
+        If provided, these peaks are merged with auto-detected peaks.
+    excluded_peak_times : np.ndarray, optional
+        Auto-detected peak times to exclude (e.g., user-removed peaks).
 
     Returns
     -------
@@ -162,21 +140,44 @@ def compute_metrics(
         ``contraction``      : np.ndarray, shape (k,) — contraction per peak [%]
         ``mean_contraction`` : float                  — mean contraction [%]
         ``freq``             : float                  — beat frequency [Hz]
-
-    Notes
-    -----
-    .. code-block:: text
-
-        peakHeight[i]  = runMax[peak_i] - neigMin[i]
-        contraction[i] = peakHeight[i] / runMax[peak_i] * 100
-        RR[i]          = time[peak_idx[i+1]] - time[peak_idx[i]]
-        freq           = 1 / mean(RR)
     """
     dt = float(time[1] - time[0])
 
     smoothed             = smooth(values, smooth_buffer)
     run_max_arr          = running_max(smoothed, run_max_window_sec, dt)
     peak_idx, peak_val   = find_peaks(smoothed, min_frq, dt)
+
+    # Filter out excluded auto peaks
+    if excluded_peak_times is not None and len(excluded_peak_times) > 0 and len(peak_idx) > 0:
+        peak_times = time[peak_idx]
+        keep_mask = np.ones(len(peak_idx), dtype=bool)
+        for excl_time in excluded_peak_times:
+            # Find auto peaks close to excluded time and mark for removal
+            close_mask = np.abs(peak_times - excl_time) < 0.05
+            keep_mask = keep_mask & ~close_mask
+        peak_idx = peak_idx[keep_mask]
+        peak_val = peak_val[keep_mask]
+
+    # Merge with extra peaks if provided
+    if extra_peak_times is not None and len(extra_peak_times) > 0:
+        # Convert extra_peak_times to indices
+        extra_indices = np.searchsorted(time, extra_peak_times)
+        # Clip to valid range
+        extra_indices = np.clip(extra_indices, 0, len(time) - 1)
+        # Create extra peak arrays
+        extra_peak_idx = np.unique(extra_indices)  # avoid duplicates
+        extra_peak_vals = smoothed[extra_peak_idx]
+        # Merge and sort by index
+        combined_idx = np.concatenate([peak_idx, extra_peak_idx])
+        combined_vals = np.concatenate([peak_val, extra_peak_vals])
+        # Sort by index
+        sort_order = np.argsort(combined_idx)
+        peak_idx = combined_idx[sort_order]
+        peak_val = combined_vals[sort_order]
+        # Remove potential duplicates (same index)
+        unique_mask = np.concatenate([[True], np.diff(peak_idx) > 0])
+        peak_idx = peak_idx[unique_mask]
+        peak_val = peak_val[unique_mask]
 
     run_max_at_peaks = run_max_arr[peak_idx]
     peak_height      = run_max_at_peaks - peak_val
