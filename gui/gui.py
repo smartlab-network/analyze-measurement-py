@@ -1,5 +1,4 @@
 import os
-
 import ttkbootstrap as ttk
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,8 +7,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.widgets import Button
 from tkinter import filedialog
 
-from row_window import RowWindow
-from heatmap import open_heatmap
+from gui.row_window import RowWindow
+from gui.heatmap import open_heatmap
 
 
 
@@ -602,7 +601,3 @@ class GUI:
             self.update_plots()
         except AttributeError:
             pass
-
-gui = GUI()
-root = gui.gui
-root.mainloop()

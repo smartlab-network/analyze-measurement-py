@@ -4,7 +4,7 @@ import ttkbootstrap as ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkinter import filedialog
 
-import plot_math
+from gui import plot_math
 
 
 class RowWindow:
