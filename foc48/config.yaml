@@ -1,0 +1,28 @@
+device:
+  name: "FOC48"
+  model: "myrPlate"
+  pixel_per_mm: 28.5
+  xGrid: 18.0
+  yGrid: 9.0
+
+analysis:
+  n_rows: 8
+  n_cols: 6
+  area_min: 10
+  area_max: 500
+  invert_threshold: false
+  max_pair_distance: null
+
+  local_margin_px: null
+
+  fallback_pix_thresh: 20.0
+  min_blob_area: 3
+  batch_size: 1
+  max_pending_batches: 4
+  fps: 60.0
+
+# Output
+output:
+  dir: "analyze_measurement"
+  csv: "foc48_output.csv"
+  calibration: "foc48_calibration.xml"
