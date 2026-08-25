@@ -1,11 +1,12 @@
 """
 StreamSource abstraction for FOC48.
 
-Provides a unified interface for different frame sources: AVI video files,
-live camera input, and an in-memory rolling buffer (used for testing the
-streaming pipeline without a live camera).
+Unified interface for different frame sources: AVI video files, live
+generic cameras (OpenCV), live Basler cameras (Pylon/USB3 Vision), and
+an in-memory rolling buffer (for testing without a live camera).
 """
 
+import time
 from abc import ABC, abstractmethod
 from queue import Queue, Empty
 from typing import Iterator, Optional
@@ -13,63 +14,53 @@ from typing import Iterator, Optional
 import cv2
 import numpy as np
 
+try:
+    from pypylon import pylon
+except ImportError:
+    pylon = None
+
 
 class StreamSource(ABC):
     """
     Abstract base class for all frame sources.
 
-    Subclasses must implement `__iter__` (yielding grayscale frames) and
-    `close` (releasing any held resources).
-
     Attributes
     ----------
     total_frames : int
-        Total number of frames the source is expected to yield, or 0 if
-        unknown/unbounded (e.g. a live camera stream). Used only for
-        progress reporting.
+        Expected total frame count, or 0 if unknown/unbounded (e.g. a
+        live camera). Used only for progress reporting.
     """
 
     total_frames: int = 0
 
     @abstractmethod
     def __iter__(self) -> Iterator[np.ndarray]:
-        """
-        Iterate over grayscale frames.
-
-        Yields
-        ------
-        np.ndarray
-            Grayscale frame (H, W) in uint8 format.
-        """
+        """Yield grayscale frames (H, W), uint8."""
         raise NotImplementedError
 
     @abstractmethod
     def close(self) -> None:
-        """
-        Release any resources held by the stream source (file handles,
-        camera device, etc.). Safe to call multiple times.
-        """
+        """Release held resources. Safe to call multiple times."""
         raise NotImplementedError
 
 
 class AVIStreamSource(StreamSource):
     """
-    Frame source reading sequentially from an AVI video file.
+    Frame source reading sequentially from an AVI file.
 
     Parameters
     ----------
     video_path : str
-        Path to the AVI video file.
+        Path to the AVI file.
     start_frame : int, optional
-        Frame index to start reading from (default 0).
+        Frame index to start from (default 0).
     end_frame : int, optional
-        Frame index (exclusive) to stop reading at. If None (default),
-        reads until the end of the file.
+        Frame index (exclusive) to stop at (default: end of file).
 
     Raises
     ------
     IOError
-        If the video file cannot be opened.
+        If the video cannot be opened.
     """
 
     def __init__(self, video_path: str, start_frame: int = 0, end_frame: Optional[int] = None):
@@ -82,77 +73,51 @@ class AVIStreamSource(StreamSource):
             raise IOError(f"Could not open video: {video_path}")
 
         total = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if end_frame is not None:
-            total = min(total, end_frame) - start_frame
-        else:
-            total = total - start_frame
+        total = (min(total, end_frame) if end_frame is not None else total) - start_frame
         self.total_frames = max(0, total)
 
     def __iter__(self) -> Iterator[np.ndarray]:
-        """
-        Iterate over grayscale frames from `start_frame` to `end_frame`.
-
-        Yields
-        ------
-        np.ndarray
-            Grayscale frame (H, W) in uint8 format.
-        """
+        """Yield grayscale frames from `start_frame` to `end_frame`."""
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
         frame_idx = self.start_frame
 
-        while True:
-            if self.end_frame is not None and frame_idx >= self.end_frame:
-                break
-
+        while self.end_frame is None or frame_idx < self.end_frame:
             ret, frame = self.cap.read()
             if not ret:
                 break
-
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-            yield gray
+            yield cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
             frame_idx += 1
 
     def close(self) -> None:
-        """
-        Release the underlying `cv2.VideoCapture`.
-        """
+        """Release the underlying `cv2.VideoCapture`."""
         self.cap.release()
 
 
 class CameraStreamSource(StreamSource):
     """
-    Frame source reading live frames from a camera device.
-
-    The stream is unbounded (`total_frames = 0`); it yields frames until
-    externally stopped (e.g. via `FOC48.stop()`).
+    Frame source reading live frames from a generic OpenCV-compatible
+    camera. Unbounded (`total_frames = 0`); yields until externally
+    stopped.
 
     Parameters
     ----------
     camera_id : int, optional
-        OpenCV camera device index (default 0).
+        OpenCV camera index (default 0).
     fps : int, optional
-        Requested capture frame rate (default 60). Actual achievable rate
-        depends on the camera hardware and driver.
-    width : int, optional
-        Requested frame width in pixels (default 2820).
-    height : int, optional
-        Requested frame height in pixels (default 1912).
+        Requested capture rate (default 60); actual rate depends on
+        hardware/driver.
+    width, height : int, optional
+        Requested frame size (default 2820, 1912).
 
     Raises
     ------
     IOError
-        If the camera device cannot be opened.
+        If the camera cannot be opened.
     """
 
-    def __init__(
-            self,
-            camera_id: int = 0,
-            fps: int = 60,
-            width: int = 2820,
-            height: int = 1912
-    ):
+    def __init__(self, camera_id: int = 0, fps: int = 60, width: int = 2820, height: int = 1912):
         self.camera_id = camera_id
-        self.total_frames = 0  # unbounded / unknown
+        self.total_frames = 0
 
         self.cap = cv2.VideoCapture(camera_id)
         if not self.cap.isOpened():
@@ -164,52 +129,181 @@ class CameraStreamSource(StreamSource):
 
     def __iter__(self) -> Iterator[np.ndarray]:
         """
-        Iterate indefinitely over grayscale frames from the camera.
-
-        Yields
-        ------
-        np.ndarray
-            Grayscale frame (H, W) in uint8 format.
-
-        Notes
-        -----
-        This generator never raises `StopIteration` on its own; the
-        caller is responsible for breaking out of the loop (e.g. via an
-        external stop signal).
+        Yield grayscale frames indefinitely; never raises StopIteration
+        on its own.
         """
         while True:
             ret, frame = self.cap.read()
             if not ret:
                 continue
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-            yield gray
+            yield cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+
+    def close(self) -> None:
+        """Release the underlying `cv2.VideoCapture`."""
+        self.cap.release()
+
+
+class BaslerStreamSource(StreamSource):
+    """
+    Frame source reading live frames from a Basler camera via Pylon
+    (USB3 Vision). Frame acquisition, DMA transfer from the camera
+    interface into host memory, and buffering are handled internally by
+    the Pylon runtime; this class retrieves already-buffered frames from
+    Pylon's acquisition queue.
+
+    Parameters
+    ----------
+    serial_number : str, optional
+        Serial number of the camera to open. If None (default), opens
+        the first camera found by the transport layer factory.
+    fps : float, optional
+        Requested acquisition frame rate (default 60.0).
+    exposure_time_us : float, optional
+        Exposure time in microseconds. If None (default), uses the
+        camera's current/default setting.
+    num_buffers : int, optional
+        Depth of Pylon's internal acquisition buffer queue (default 10).
+    duration_seconds : float, optional
+        If given, the stream automatically stops this many seconds after
+        the first frame arrives (default None: runs until externally
+        stopped via `close()`).
+    timeout_ms : int, optional
+        Timeout for each frame retrieval attempt, in milliseconds
+        (default 1000).
+
+    Raises
+    ------
+    ImportError
+        If `pypylon` is not installed.
+    RuntimeError
+        If no camera is found, or the specified serial number is not
+        connected.
+    """
+
+    def __init__(
+            self,
+            serial_number: Optional[str] = None,
+            fps: float = 60.0,
+            exposure_time_us: Optional[float] = None,
+            num_buffers: int = 10,
+            duration_seconds: Optional[float] = None,
+            timeout_ms: int = 1000
+    ):
+        if pylon is None:
+            raise ImportError(
+                "pypylon is not installed. Run: pip install pypylon\n"
+                "The Basler Pylon Runtime must also be installed on this machine."
+            )
+
+        self.total_frames = 0
+        self.duration_seconds = duration_seconds
+        self.timeout_ms = timeout_ms
+        self._closed = False
+
+        tl_factory = pylon.TlFactory.GetInstance()
+        devices = tl_factory.EnumerateDevices()
+        if not devices:
+            raise RuntimeError("No Basler camera found.")
+
+        if serial_number is not None:
+            device = next((d for d in devices if d.GetSerialNumber() == serial_number), None)
+            if device is None:
+                raise RuntimeError(f"Camera with serial number {serial_number} not found.")
+        else:
+            device = devices[0]
+
+        self.camera = pylon.InstantCamera(tl_factory.CreateDevice(device))
+        self.camera.Open()
+
+        print(f"Connected to: {self.camera.GetDeviceInfo().GetModelName()} "
+              f"(S/N: {self.camera.GetDeviceInfo().GetSerialNumber()})")
+
+        # Mono8 gives a direct (H, W) uint8 array via GrabResult.Array,
+        # matching our grayscale pipeline exactly - no color conversion needed.
+        self.camera.PixelFormat.SetValue("Mono8")
+
+        if exposure_time_us is not None:
+            self.camera.ExposureTime.SetValue(exposure_time_us)
+
+        self.camera.AcquisitionFrameRateEnable.SetValue(True)
+        self.camera.AcquisitionFrameRate.SetValue(fps)
+        self.camera.MaxNumBuffer = num_buffers
+
+        actual_fps = self.camera.ResultingFrameRate.GetValue()
+        print(f"Requested {fps} fps, camera reports achievable rate: {actual_fps:.1f} fps")
+
+    def __iter__(self) -> Iterator[np.ndarray]:
+        """
+        Iterate over grayscale frames from Pylon's acquisition queue, in
+        strict acquisition order.
+
+        Yields
+        ------
+        np.ndarray
+            Grayscale frame (H, W), copied out of Pylon's buffer before
+            the buffer is released back to the acquisition queue.
+
+        Notes
+        -----
+        Uses `GrabStrategy_OneByOne` so every acquired frame is yielded
+        (rather than `GrabStrategy_LatestImageOnly`, which would silently
+        drop frames if the consumer falls behind) - required here since
+        a contraction time series needs every frame, not just the latest.
+
+        Each buffer is explicitly copied before `grabResult.Release()`,
+        since Pylon reuses that memory for the next incoming frame.
+        """
+        self.camera.StartGrabbing(pylon.GrabStrategy_OneByOne)
+        start_time = None
+
+        while self.camera.IsGrabbing() and not self._closed:
+            grab_result = self.camera.RetrieveResult(self.timeout_ms, pylon.TimeoutHandling_ThrowException)
+
+            if not grab_result.GrabSucceeded():
+                print(f"Warning: grab failed - {grab_result.ErrorDescription}")
+                grab_result.Release()
+                continue
+
+            frame = grab_result.Array.copy()
+            grab_result.Release()
+
+            if start_time is None:
+                start_time = time.perf_counter()
+
+            yield frame
+
+            if self.duration_seconds is not None and time.perf_counter() - start_time >= self.duration_seconds:
+                break
+
+        self.camera.StopGrabbing()
 
     def close(self) -> None:
         """
-        Release the underlying `cv2.VideoCapture`.
+        Stop acquisition and release the camera handle. Safe to call
+        multiple times.
         """
-        self.cap.release()
+        self._closed = True
+        if self.camera.IsGrabbing():
+            self.camera.StopGrabbing()
+        if self.camera.IsOpen():
+            self.camera.Close()
 
 
 class RollingBufferSource(StreamSource):
     """
     Frame source reading from an in-memory queue, simulating a rolling
-    buffer fed by an external producer (e.g. a microscope acquisition
-    thread). Used to test the streaming pipeline without a live camera.
+    buffer fed by an external producer.
 
     Parameters
     ----------
     frame_queue : queue.Queue
-        Queue from which frames are consumed. Frames should be
-        `np.ndarray` grayscale images. A `None` item in the queue is
-        treated as an end-of-stream sentinel.
+        Queue of `np.ndarray` frames. A `None` item signals end-of-stream.
     expected_frames : int, optional
-        If given, the source stops after yielding this many frames, even
-        if the queue is not exhausted (default None, i.e. rely on the
-        `None` sentinel or `close()` instead).
+        Stop after this many frames, even if the queue isn't exhausted
+        (default: rely on the `None` sentinel or `close()`).
     poll_timeout : float, optional
-        Timeout (seconds) for each queue read attempt before checking
-        whether the source should stop (default 0.1).
+        Queue read timeout in seconds before re-checking stop conditions
+        (default 0.1).
     """
 
     def __init__(
@@ -226,39 +320,22 @@ class RollingBufferSource(StreamSource):
 
     def __iter__(self) -> Iterator[np.ndarray]:
         """
-        Iterate over frames from the queue until a stop condition is met.
-
-        Yields
-        ------
-        np.ndarray
-            Grayscale frame (H, W) in uint8 format.
-
-        Notes
-        -----
-        Stops when:
-        - `close()` has been called, or
-        - a `None` sentinel is read from the queue, or
-        - `expected_frames` frames have been yielded (if set).
+        Yield frames until `close()` is called, a `None` sentinel is
+        read, or `expected_frames` is reached.
         """
         n_yielded = 0
-
         while not self._closed:
             if self._expected_frames is not None and n_yielded >= self._expected_frames:
                 break
-
             try:
                 frame = self.frame_queue.get(timeout=self._poll_timeout)
             except Empty:
                 continue
-
-            if frame is None:  # end-of-stream sentinel
+            if frame is None:
                 break
-
             yield frame
             n_yielded += 1
 
     def close(self) -> None:
-        """
-        Signal the source to stop yielding frames on the next check.
-        """
+        """Signal the source to stop yielding frames."""
         self._closed = True
